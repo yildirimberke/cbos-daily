@@ -17,4 +17,4 @@ jobs:
       - name: Aynı kanıt paketini karşılaştır
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: python3 model_karsilastirma.py
+        run: python3 model_karsilastirma.py --paired

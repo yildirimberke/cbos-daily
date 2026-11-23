@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError
@@ -67,8 +68,16 @@ def main():
     key = os.environ["OPENROUTER_API_KEY"].strip()
     quota = request_json("https://openrouter.ai/api/v1/key", key)["data"].get("free_model_daily_requests") or {}
     remaining = quota.get("remaining")
-    if type(remaining) is int and remaining < len(TRIALS) + 14:
+    paired = "--paired" in sys.argv
+    trials = [TRIALS[1], TRIALS[2], TRIALS[2], TRIALS[1]] if paired else TRIALS
+    if type(remaining) is int and remaining < len(trials) + 14:
         raise SystemExit("Günlük bültenler için kota ayrıldı. Deney çalıştırılmadı.")
+    if paired:
+        for trial in trials:
+            row = run_trial(trial, key)
+            print("SONUC " + json.dumps(row, ensure_ascii=False), flush=True)
+            time.sleep(4)
+        return
     with ThreadPoolExecutor(max_workers=2) as pool:
         for row in pool.map(lambda trial: run_trial(trial, key), TRIALS):
             print("SONUC " + json.dumps(row, ensure_ascii=False), flush=True)
