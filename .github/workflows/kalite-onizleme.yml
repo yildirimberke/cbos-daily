@@ -1,0 +1,20 @@
+name: CBOS editör önizlemesi
+on:
+  workflow_dispatch:
+  push:
+    branches: [cbos-model-deneyi]
+    paths: ['.github/workflows/kalite-onizleme.yml']
+permissions:
+  contents: read
+jobs:
+  onizleme:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Gerçek kaynaklarla önizle
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 sabah.py
