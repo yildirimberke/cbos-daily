@@ -44,7 +44,10 @@ def fetch(url, payload=None, headers=None):
     if payload is not None:
         request.add_header("Content-Type", "application/json")
         request.data = json.dumps(payload).encode()
-    with urlopen(request, timeout=(95 if payload and "response_format" in payload else 60) if payload else 18) as response:
+    timeout = 18
+    if payload:
+        timeout = 95 if "response_format" in payload else 60
+    with urlopen(request, timeout=timeout) as response:
         return response.read(5_000_001)
 
 
@@ -215,8 +218,8 @@ def parse_search_plan(raw):
     return pairs[:3]
 
 
-def ask_json(key, instruction, material, *, editor=False):
-    attempts = ([("particle-ai/particle-1:free", "max"), ("openrouter/free", None)] if editor
+def ask_json(key, instruction, material, *, editor=False, validate=None):
+    attempts = ([("particle-ai/particle-1:free", "high"), ("openrouter/free", None)] if editor
                 else [("google/gemma-4-31b-it:free", None), ("openrouter/free", None)])
     names = ("id", "baslik", "haber", "okuma", "izleme", "dayanak") if editor else ("sorgu", "kisa")
     item_schema = {"type": "object", "additionalProperties": False, "required": list(names),
@@ -235,6 +238,25 @@ def ask_json(key, instruction, material, *, editor=False):
         if not editor and model == "openrouter/free":
             # Genel yönlendiricide sağlayıcıya özgü biçim/çıktı sınırı isteme.
             request = {"model": model, "messages": payload["messages"]}
+        if editor and model == "openrouter/free":
+            # Yoğunluk halinde daha küçük bir dosyayla iki olayı derinleştir.
+            ranked = sorted(material["adaylar"], key=lambda r: (
+                not bool(r.get("excerpt")), not r["taninan_kurum"], not bool(r.get("info"))
+            ))
+            shortlist, domains = [], {}
+            for row in ranked:
+                host = row["alan"]
+                if domains.get(host, 0) >= 3:
+                    continue
+                shortlist.append(dict(row, excerpt=row.get("excerpt", "")[:2000]))
+                domains[host] = domains.get(host, 0) + 1
+                if len(shortlist) == 14:
+                    break
+            request["reasoning"] = {"effort": "low", "exclude": True}
+            request["messages"] = [
+                {"role": "system", "content": payload["messages"][0]["content"] +
+                 " Daraltılmış baskıda en önemli iki haberi seç."},
+                {"role": "user", "content": json.dumps(dict(material, adaylar=shortlist), ensure_ascii=False)}]
         if effort:
             request["reasoning"] = {"effort": effort, "exclude": True}
             request["provider"] = {"require_parameters": True}
@@ -255,6 +277,10 @@ def ask_json(key, instruction, material, *, editor=False):
             result = parsed.get("satirlar") if isinstance(parsed, dict) else parsed
             if not isinstance(result, list) or not result:
                 raise ValueError("boş veya biçimsiz çıktı")
+            if validate is not None:
+                result = validate(result)
+                if not result:
+                    raise ValueError("kanıt kontrolünü geçen haber yok")
             return result
         except (ValueError, OSError, KeyError, IndexError, TypeError) as error:
             code = getattr(error, "code", None)
@@ -530,10 +556,12 @@ def select_news(items, key, quotes, events):
         "dayanak seçilen kayıttan özgün dilde 12-160 karakterlik kesintisiz bir alıntı olsun. "
         "Bir başlıktan ayrıntı uydurma. Malzeme yetmiyorsa kapsamı daralt veya o haberi atla."
     )
-    notes = ask_json(key, instruction, {"adaylar": material, "piyasalar": [plain(q) for q in quotes],
-                                        "takvim": plain(events)}, editor=True)
-    if not isinstance(notes, list):
-        raise ValueError("model biçimi")
+    return ask_json(key, instruction, {"adaylar": material, "piyasalar": [plain(q) for q in quotes],
+                                       "takvim": plain(events)}, editor=True,
+                    validate=lambda notes: render_news(notes, items))
+
+
+def render_news(notes, items):
     result, used = [], set()
     for note in notes:
         if not isinstance(note, dict):
@@ -548,7 +576,7 @@ def select_news(items, key, quotes, events):
             print("Kanıt kontrolünden geçmedi ·", items[i]["source"], file=sys.stderr)
             continue
         title, fact, reading, watch = (turkish_copy(value, items[i]) for value in fields)
-        if len(title) > 200 or not reading or not watch:
+        if len(title) > 200 or not reading or not watch or any(len(v) > 2800 for v in (fact, reading, watch)):
             continue
         line = anchor(title.strip(), items[i]["url"]) + " · " + html.escape(items[i]["source"])
         line += "\n" + html.escape(fact.strip())
@@ -562,7 +590,7 @@ def select_news(items, key, quotes, events):
     return result
 
 
-def build(now, key):
+def build(now, key, *, require_editor=False):
     start = now - timedelta(hours=24)
     if now.weekday() == 0:
         start = (now - timedelta(days=3)).replace(hour=18, minute=35, second=0, microsecond=0)
@@ -611,9 +639,22 @@ def build(now, key):
         notes = []
     header = f"<b>Günaydın · {now:%d.%m.%Y}</b>\nVeri kesimi {now:%H.%M} TSİ"
     if not notes:
+        if require_editor:
+            raise RuntimeError("Önizlemede kaynak kontrolünden geçen editör yazısı üretilemedi.")
         if items:
-            notes = ["<i>Kaynak başlıkları · editör özeti yok</i>"] + [
-                anchor(r["title"][:140], r["url"]) + " · " + html.escape(r["source"]) for r in items[:3]]
+            notes = ["<i>Kısa baskı · Editör analizi üretilemedi. Aşağıda yayıncı başlıkları yer alıyor.</i>"]
+            ranked = sorted(items, key=lambda r: (
+                not (is_issuer(r) and bool(r.get("excerpt"))), not bool(r.get("excerpt")),
+                not bool(r.get("info"))
+            ))
+            sources = set()
+            for row in ranked:
+                if row["source"] in sources:
+                    continue
+                notes.append(anchor(row["title"], row["url"]) + " · " + html.escape(row["source"]))
+                sources.add(row["source"])
+                if len(sources) == 4:
+                    break
         else:
             notes = ["Erişilen akışlarda zaman aralığına uyan başlık bulunamadı."]
     sections = [header, *notes, "<b>Piyasalar · son gözlem, TSİ</b>\n" + ("\n".join(quotes) or "Veri alınamadı."),
@@ -625,11 +666,15 @@ def build(now, key):
 
 def telegram_parts(text):
     # Yalnızca oluşturduğumuz kapalı HTML paragraflarının arasından böl.
+    def size(fragment):
+        visible = html.unescape(re.sub(r"<[^>]+>", "", fragment))
+        return len(visible.encode("utf-16-le")) // 2
+
     parts, current = [], ""
     for paragraph in text.split("\n\n"):
         candidate = (current + "\n\n" + paragraph) if current else paragraph
-        if len(plain(candidate).encode("utf-16-le")) > 7900:
-            if len(plain(paragraph).encode("utf-16-le")) > 7900:
+        if size(candidate) > 3950:
+            if size(paragraph) > 3950:
                 raise ValueError("Tek paragraf Telegram sınırını aşıyor")
             parts.append(current)
             current = paragraph
