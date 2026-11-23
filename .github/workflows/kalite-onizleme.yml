@@ -27,5 +27,5 @@ jobs:
           remaining = quota.get("remaining")
           if isinstance(remaining, int) and remaining < 12:
               raise SystemExit("Önizleme durdu. Günlük bültenler için kota ayrıldı.")
-          print(build(datetime.now(TR), key))
+          print(build(datetime.now(TR), key, require_editor=True))
           PY
