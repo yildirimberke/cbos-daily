@@ -6,10 +6,12 @@ import json
 import math
 import os
 import re
+import signal
 import socket
 import subprocess
 import sys
 import time
+from threading import current_thread, main_thread
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -218,8 +220,25 @@ def parse_search_plan(raw):
     return pairs[:3]
 
 
+def model_response(request, key, seconds):
+    # Actions/Linux'ta sunucunun boş bağlantı verileriyle soket süresini uzatmasını sınırla.
+    deadline = hasattr(signal, "SIGALRM") and current_thread() is main_thread()
+    def expired(*_):
+        raise TimeoutError("Model duvar saati sınırı")
+    if deadline:
+        previous = signal.signal(signal.SIGALRM, expired)
+        signal.alarm(seconds)
+    try:
+        return json.loads(fetch("https://openrouter.ai/api/v1/chat/completions", request,
+                                {"Authorization": "Bearer " + key}))
+    finally:
+        if deadline:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+
 def ask_json(key, instruction, material, *, editor=False, validate=None):
-    attempts = ([("particle-ai/particle-1:free", "high"), ("openrouter/free", None)] if editor
+    attempts = ([("particle-ai/particle-1:free", "medium"), ("openrouter/free", None)] if editor
                 else [("google/gemma-4-31b-it:free", None), ("openrouter/free", None)])
     names = ("id", "baslik", "haber", "okuma", "izleme", "dayanak") if editor else ("sorgu", "kisa")
     item_schema = {"type": "object", "additionalProperties": False, "required": list(names),
@@ -229,10 +248,11 @@ def ask_json(key, instruction, material, *, editor=False, validate=None):
     payload = {
         "messages": [{"role": "system", "content": instruction + (" Sonuç dizisini satirlar anahtarına koy." if editor else "")},
                      {"role": "user", "content": json.dumps(material, ensure_ascii=False)}],
-        "max_tokens": 8000 if editor else 1200,
+        "max_tokens": 12000 if editor else 1200,
     }
     if editor:
         payload["response_format"] = {"type": "json_object"}
+    accepted = {}
     for model, effort in attempts:
         request = dict(payload, model=model)
         if not editor and model == "openrouter/free":
@@ -246,7 +266,7 @@ def ask_json(key, instruction, material, *, editor=False, validate=None):
             shortlist, domains = [], {}
             for row in ranked:
                 host = row["alan"]
-                if domains.get(host, 0) >= 3:
+                if domains.get(host, 0) >= 3 or row["id"] in accepted:
                     continue
                 shortlist.append(dict(row, excerpt=row.get("excerpt", "")[:2000]))
                 domains[host] = domains.get(host, 0) + 1
@@ -255,16 +275,16 @@ def ask_json(key, instruction, material, *, editor=False, validate=None):
             request["reasoning"] = {"effort": "low", "exclude": True}
             request["messages"] = [
                 {"role": "system", "content": payload["messages"][0]["content"] +
-                 " Daraltılmış baskıda en önemli iki haberi seç."},
-                {"role": "user", "content": json.dumps(dict(material, adaylar=shortlist), ensure_ascii=False)}]
+                 " Daraltılmış baskıda en önemli iki ayrı olayı seç. Daha önce yazılmış olayları atla."},
+                {"role": "user", "content": json.dumps(dict(material, adaylar=shortlist,
+                    yazilmis_basliklar=[material["adaylar"][i]["title"] for i in accepted]), ensure_ascii=False)}]
         if effort:
             request["reasoning"] = {"effort": effort, "exclude": True}
             request["provider"] = {"require_parameters": True}
             request["response_format"] = {"type": "json_schema", "json_schema": {"name": "cbos", "strict": True, "schema": schema}}
         started = time.monotonic()
         try:
-            data = json.loads(fetch("https://openrouter.ai/api/v1/chat/completions", request,
-                                    {"Authorization": "Bearer " + key}))
+            data = model_response(request, key, 95 if editor else 32)
             choice = data["choices"][0]
             print("Editör" if editor else "Plan", "·", data.get("model"), "·", choice.get("finish_reason"),
                   "·", round(time.monotonic()-started, 1), "sn", file=sys.stderr)
@@ -278,14 +298,23 @@ def ask_json(key, instruction, material, *, editor=False, validate=None):
             if not isinstance(result, list) or not result:
                 raise ValueError("boş veya biçimsiz çıktı")
             if validate is not None:
-                result = validate(result)
-                if not result:
+                if model == "openrouter/free":
+                    allowed = {r["id"] for r in shortlist}
+                    result = [r for r in result if isinstance(r, dict) and type(r.get("id")) is int and r["id"] in allowed]
+                accepted.update(validate(result))
+                if len(accepted) < 2 and model != attempts[-1][0] and len(material["adaylar"]) > 1:
+                    print("Editör kapsamı eksik · ikinci yazım deneniyor", file=sys.stderr)
+                    continue
+                if not accepted:
                     raise ValueError("kanıt kontrolünü geçen haber yok")
+                return list(accepted.values())[:4]
             return result
         except (ValueError, OSError, KeyError, IndexError, TypeError) as error:
             code = getattr(error, "code", None)
             print("Model denemesi", model, code or type(error).__name__, file=sys.stderr)
             if model == attempts[-1][0] or code in (401, 402, 403):
+                if accepted:
+                    return list(accepted.values())
                 raise
 
 
@@ -543,7 +572,8 @@ def select_news(items, key, quotes, events):
         "yerine 'bankanın bu varlığı teminat gösterebilmesi' yaz. Yüzde, yüzde puan ve baz puanı ayır. "
         "Okurun bir kurumsal bankacı. Ona işe giderken okuyacağı bir gazete yaz. Her olay için id, baslik, "
         "haber, okuma, izleme ve dayanak alanlarını döndür. Güçlü bir manşete yaklaşık 100-160 kelime "
-        "ayırabilirsin. Diğerlerinde haberin gerektirdiği kadar yaz. baslik gelişmenin kendisini anlatsın. "
+        "ayırabilirsin. Diğerlerine 60-110 kelime ayır. Her paragrafı 2-3 cümlede bitir. Çevrilmiş doğrudan "
+        "alıntı kullanma, kurumun ne açıkladığını kendi sözcüklerinle aktar. baslik gelişmenin kendisini anlatsın. "
         "haber bir kısa paragraf: kararı kim aldı, ne değişti, hangi ayrıntı kapsamı daraltıyor? "
         "okuma ayrı bir kısa paragraf: somut bir bilanço kalemi, bir fiyat veya ekonomik bir karar üzerinden "
         "etkinin adımlarını açıkla. Manşette ciddi bir alternatif açıklama veya etkinin çalışmayacağı koşulu "
@@ -562,12 +592,12 @@ def select_news(items, key, quotes, events):
 
 
 def render_news(notes, items):
-    result, used = [], set()
+    result = {}
     for note in notes:
         if not isinstance(note, dict):
             continue
         i = note.get("id")
-        if type(i) is not int or not 0 <= i < len(items) or i in used:
+        if type(i) is not int or not 0 <= i < len(items) or i in result:
             continue
         fields = [note.get(k) for k in ("baslik", "haber", "okuma", "izleme")]
         if not all(isinstance(s, str) for s in fields) or not all(s.strip() for s in fields[:2]):
@@ -582,9 +612,8 @@ def render_news(notes, items):
         line += "\n" + html.escape(fact.strip())
         line += "\n\n" + html.escape(reading)
         line += "\n\n<i>İzlenecek gösterge</i> · " + html.escape(watch)
-        result.append(line)
+        result[i] = line
         print("Seçildi ·", items[i]["source"], "·", items[i]["title"], "→", title[:100], file=sys.stderr)
-        used.add(i)
         if len(result) == 4:
             break
     return result
@@ -638,9 +667,11 @@ def build(now, key, *, require_editor=False):
         print("OpenRouter", type(error).__name__, getattr(error, "code", ""), file=sys.stderr)
         notes = []
     header = f"<b>Günaydın · {now:%d.%m.%Y}</b>\nVeri kesimi {now:%H.%M} TSİ"
+    if require_editor and len(notes) < 2:
+        raise RuntimeError(f"Önizleme yetersiz · {len(notes)} kaynaklı yazı.")
+    if len(notes) == 1:
+        header += "\n<i>Dar kapsamlı baskı · tek kaynaklı yazı üretildi.</i>"
     if not notes:
-        if require_editor:
-            raise RuntimeError("Önizlemede kaynak kontrolünden geçen editör yazısı üretilemedi.")
         if items:
             notes = ["<i>Kısa baskı · Editör analizi üretilemedi. Aşağıda yayıncı başlıkları yer alıyor.</i>"]
             ranked = sorted(items, key=lambda r: (
