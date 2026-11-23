@@ -192,7 +192,7 @@ def calendar(now):
 
 def ask_json(key, instruction, material, *, editor=False):
     attempts = ([("particle-ai/particle-1:free", "max"), ("openrouter/free", None)] if editor
-                else [("openrouter/free", None)])
+                else [("google/gemma-4-31b-it:free", None), ("particle-ai/particle-1:free", "none")])
     names = ("id", "baslik", "haber", "okuma", "dayanak") if editor else ("sorgu", "kisa")
     item_schema = {"type": "object", "additionalProperties": False, "required": list(names),
                    "properties": {n: {"type": "integer" if n == "id" else "string"} for n in names}}
@@ -201,7 +201,7 @@ def ask_json(key, instruction, material, *, editor=False):
     payload = {
         "messages": [{"role": "system", "content": instruction + " Sonuç dizisini satirlar anahtarına koy."},
                      {"role": "user", "content": json.dumps(material, ensure_ascii=False)}],
-        "max_tokens": 8000 if editor else 5000,
+        "max_tokens": 8000 if editor else 1200,
         "response_format": {"type": "json_object"},
     }
     for model, effort in attempts:
