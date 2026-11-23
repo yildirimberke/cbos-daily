@@ -17,4 +17,15 @@ jobs:
       - name: Gerçek kaynaklarla önizle
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-        run: python3 sabah.py
+        run: |
+          python3 - <<'PY'
+          import os
+          from model_karsilastirma import request_json
+          from sabah import TR, build, datetime
+          key = os.environ["OPENROUTER_API_KEY"].strip()
+          quota = request_json("https://openrouter.ai/api/v1/key", key)["data"].get("free_model_daily_requests") or {}
+          remaining = quota.get("remaining")
+          if isinstance(remaining, int) and remaining < 12:
+              raise SystemExit("Önizleme durdu. Günlük bültenler için kota ayrıldı.")
+          print(build(datetime.now(TR), key))
+          PY

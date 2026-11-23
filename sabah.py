@@ -192,7 +192,7 @@ def calendar(now):
 
 def ask_json(key, instruction, material, *, editor=False):
     attempts = ([("particle-ai/particle-1:free", "max"), ("openrouter/free", None)] if editor
-                else [("google/gemma-4-31b-it:free", None), ("particle-ai/particle-1:free", "none")])
+                else [("google/gemma-4-31b-it:free", None), ("openrouter/free", None)])
     names = ("id", "baslik", "haber", "okuma", "dayanak") if editor else ("sorgu", "kisa")
     item_schema = {"type": "object", "additionalProperties": False, "required": list(names),
                    "properties": {n: {"type": "integer" if n == "id" else "string"} for n in names}}
@@ -206,6 +206,12 @@ def ask_json(key, instruction, material, *, editor=False):
     }
     for model, effort in attempts:
         request = dict(payload, model=model)
+        if not editor and model == "openrouter/free":
+            # Aynı plan için ücretsiz sağlayıcılara sırayla yönlenebil.
+            request.pop("model")
+            request["models"] = ["particle-ai/particle-1:free", "liquid/lfm-3-1.7b:free",
+                                 "inclusionai/ling-3.2-flash:free", "openrouter/free"]
+            request["reasoning"] = {"enabled": False}
         if effort:
             request["reasoning"] = {"effort": effort, "exclude": True}
             request["provider"] = {"require_parameters": True}
@@ -442,6 +448,13 @@ def supported(note, row):
     return True
 
 
+def turkish_copy(text, row):
+    text = re.sub(r"\bABD (?:Presidente|President) (?=[A-ZÇĞİÖŞÜ])", "ABD Başkanı ", text)
+    if row["source"] == "ECB" and "ecb" in evidence_text(row) and "eab" not in evidence_text(row):
+        text = re.sub(r"^EAB(?=[\s,])", "Avrupa Merkez Bankası", text)
+    return text.strip()
+
+
 def select_news(items, key):
     if not items or not key:
         return []
@@ -487,7 +500,7 @@ def select_news(items, key):
         if not supported(note, items[i]):
             print("Kanıt kontrolünden geçmedi ·", items[i]["source"], file=sys.stderr)
             continue
-        title, fact, reading = fields
+        title, fact, reading = (turkish_copy(value, items[i]) for value in fields)
         # Kesilmiş cümle özellikle gerekçeyi veya bir koşulu tersine çevirebilir.
         if len(title.strip()) > 140 or len(fact.strip()) > 340:
             continue
