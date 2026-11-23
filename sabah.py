@@ -323,6 +323,24 @@ def plan_searches(items, now, key):
     ), {"kesim": now.isoformat(timespec="minutes"), "ipuclari": [i["title"] for i in items[:25]]})
 
 
+def headline_queries(items):
+    stop = set(("a an and as at by for from in is its of on or the to with about says new press release "
+                "bir bu da de için ile ve göre ilişkin hakkında haber açıkladı bugün yeni duyurusu").split())
+    queries, sources = {}, set()
+    for row in items:
+        if row["source"] in sources:
+            continue
+        terms = [word for word in re.findall(r"[^\W_]+", row["title"])
+                 if word.casefold() not in stop and (len(word) > 2 or word.isupper()) and not word.isdigit()]
+        if len(terms) < 2:
+            continue
+        queries[" ".join(terms[:5])] = " ".join(terms[:3])
+        sources.add(row["source"])
+        if len(queries) == 3:
+            break
+    return queries or {"Türkiye kredi koşulları": "Türkiye kredi", "Asia semiconductor exports": "Asia exports"}
+
+
 def research(items, start, now, key):
     try:
         plan = plan_searches(items, now, key)
@@ -345,9 +363,8 @@ def research(items, start, now, key):
         if len(queries) == 3:
             break
     if not queries:
-        print("Plan alınamadı · yedek konu sorguları", file=sys.stderr)
-        queries = {"Türkiye kredi koşulları": "Türkiye kredi", "Asia semiconductor exports": "Asia exports",
-                   "sovereign bond yields": "bond yields"}
+        print("Plan alınamadı · mevcut başlıklardan yedek sorgular", file=sys.stderr)
+        queries = headline_queries(items)
     seen = {i["url"].split("#")[0] for i in items}
     found, readers = [], []
     success = 0
@@ -445,7 +462,8 @@ def select_news(items, key):
         "Editörlüğü iki adımda yap: En önemli değişimi ve destekleyen özgün cümleyi bul, ardından "
         "rakamın vadesini, birimini, yönünü ve çıkarımın sınırını yayımlanacak Türkçe cümlede kontrol et. "
         "Unvanlar ve yerleşik terimler doğal Türkçe olsun: ABD Başkanı, yapay zekâ, büyük bulut "
-        "sağlayıcıları. Gerekirse teknik terimi parantezde koru. Yüzde, yüzde puan ve baz puanı ayır. "
+        "sağlayıcıları. Gerekirse teknik terimi parantezde koru. Örneğin 'teminata mobilizasyon' "
+        "yerine 'bankanın bu varlığı teminat gösterebilmesi' yaz. Yüzde, yüzde puan ve baz puanı ayır. "
         "Her olay için id, baslik, haber, okuma ve dayanak alanlarını "
         "içeren bir JSON dizisi döndür. baslik kısa Türkçe başlık, haber kaynağın desteklediği tek "
         "cümle, okuma ise somut mekanizma veya daha sonra izlenebilecek özgül bir soru. Veri "
