@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
   push:
     branches: [cbos-model-deneyi]
-    paths: ['.github/workflows/kalite-onizleme.yml']
+    paths: ['.github/workflows/kalite-onizleme.yml', 'sabah.py']
 permissions:
   contents: read
 jobs:
