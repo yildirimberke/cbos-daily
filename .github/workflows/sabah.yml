@@ -1,0 +1,42 @@
+name: CBOS Sabah
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 5 * * 1-5'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: cbos-sabah-teslim
+  cancel-in-progress: false
+
+jobs:
+  bulten:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: Bugünkü teslimi kontrol et
+        id: once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          since=$(TZ=Europe/Istanbul date '+%F')
+          start=$(date -u -d "$since 00:00 +0300" '+%FT%TZ')
+          # Önceden başarıyla bitmiş bir gönderim varsa aynı gün yeniden gönderme.
+          count=$(gh api -X GET "repos/$GH_REPO/actions/workflows/sabah.yml/runs" \
+            -f status=success -f "created=>=$start" -f branch="$GITHUB_REF_NAME" --jq '.total_count')
+          if [ "$count" -eq 0 ]; then echo "send=true" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/checkout@v4
+        if: steps.once.outputs.send == 'true'
+        with:
+          persist-credentials: false
+      - name: Sabah bültenini gönder
+        if: steps.once.outputs.send == 'true'
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 sabah.py --send
