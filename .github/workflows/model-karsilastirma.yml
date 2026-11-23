@@ -1,0 +1,20 @@
+name: CBOS model karşılaştırması
+on:
+  workflow_dispatch:
+  push:
+    branches: [cbos-model-deneyi]
+    paths: ['.github/workflows/model-karsilastirma.yml', 'model_karsilastirma.py']
+permissions:
+  contents: read
+jobs:
+  deneme:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Aynı kanıt paketini karşılaştır
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 model_karsilastirma.py
