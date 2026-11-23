@@ -1,0 +1,51 @@
+name: CBOS baglanti testi
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  baglanti:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    steps:
+      - name: Ücretsiz modelden yanıt al ve Telegram'a gönder
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          const env = process.env;
+          for (const key of ['OPENROUTER_API_KEY', 'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']) {
+            if (!env[key]?.trim()) throw new Error('Eksik GitHub secret: ' + key);
+          }
+          async function post(service, url, payload, headers = {}) {
+            let response;
+            try {
+              response = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...headers },
+                body: JSON.stringify(payload),
+                signal: AbortSignal.timeout(90000)
+              });
+            } catch {
+              throw new Error(service + ' bağlantısı kurulamadı veya zaman aşımına uğradı.');
+            }
+            if (!response.ok) throw new Error(service + ' HTTP ' + response.status);
+            return response.json();
+          }
+          const reply = await post('OpenRouter', 'https://openrouter.ai/api/v1/chat/completions', {
+            model: 'openrouter/free',
+            messages: [{ role: 'user', content: 'Türkçe, çok kısa bir günaydın mesajı yaz.' }]
+          }, { Authorization: 'Bearer ' + env.OPENROUTER_API_KEY.trim() });
+          const message = reply.choices?.[0]?.message?.content;
+          if (typeof message !== 'string' || !message.trim()) throw new Error('OpenRouter boş yanıt döndürdü. Testi tekrar çalıştır.');
+          const result = await post('Telegram', 'https://api.telegram.org/bot' + env.TELEGRAM_BOT_TOKEN.trim() + '/sendMessage', {
+            chat_id: env.TELEGRAM_CHAT_ID.trim(),
+            text: 'CBOS bağlantı testi başarılı.\n\n' + message.trim().slice(0, 500)
+          });
+          if (!result.ok || !result.result?.message_id) throw new Error('Telegram teslimi doğrulanamadı.');
+          console.log('OpenRouter yanıt verdi. Telegram mesajı kabul etti.');
+          JS
