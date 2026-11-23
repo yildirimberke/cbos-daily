@@ -23,12 +23,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "send=true" >> "$GITHUB_OUTPUT"
+            echo "Elle başlatıldı. Yeni bülten gönderilecek." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           since=$(TZ=Europe/Istanbul date '+%F')
           start=$(date -u -d "$since 00:00 +0300" '+%FT%TZ')
           # Önceden başarıyla bitmiş bir gönderim varsa aynı gün yeniden gönderme.
           count=$(gh api -X GET "repos/$GH_REPO/actions/workflows/sabah.yml/runs" \
             -f status=success -f "created=>=$start" -f branch="$GITHUB_REF_NAME" --jq '.total_count')
-          if [ "$count" -eq 0 ]; then echo "send=true" >> "$GITHUB_OUTPUT"; fi
+          if [ "$count" -eq 0 ]; then
+            echo "send=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Bugün zaten gönderildi. Zamanlanmış gönderim atlandı." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - uses: actions/checkout@v4
         if: steps.once.outputs.send == 'true'
         with:
