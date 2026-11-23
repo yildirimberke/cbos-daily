@@ -207,11 +207,8 @@ def ask_json(key, instruction, material, *, editor=False):
     for model, effort in attempts:
         request = dict(payload, model=model)
         if not editor and model == "openrouter/free":
-            # Aynı plan için ücretsiz sağlayıcılara sırayla yönlenebil.
-            request.pop("model")
-            request["models"] = ["particle-ai/particle-1:free", "liquid/lfm-3-1.7b:free",
-                                 "inclusionai/ling-3.2-flash:free", "openrouter/free"]
-            request["reasoning"] = {"enabled": False}
+            # Genel yönlendiricide sağlayıcıya özgü biçim/çıktı sınırı isteme.
+            request = {"model": model, "messages": payload["messages"]}
         if effort:
             request["reasoning"] = {"effort": effort, "exclude": True}
             request["provider"] = {"require_parameters": True}
